@@ -19,8 +19,11 @@ import com.rama.blelab.data.repository.MacroDataStore
 import com.rama.blelab.domain.repository.BluetoothRepository
 import com.rama.blelab.domain.usecase.*
 import com.rama.blelab.presentation.home.HomeScreen
+import com.rama.blelab.presentation.router.RouterDetailsScreen
 import com.rama.blelab.presentation.router.RouterScannerScreen
 import com.rama.blelab.presentation.router.RouterScannerViewModel
+import com.rama.blelab.presentation.router.RouterToolsScreen
+import com.rama.blelab.presentation.router.SpeedGraphScreen
 import com.rama.blelab.presentation.scanner.DeviceDetailsScreen
 import com.rama.blelab.presentation.scanner.ScannerScreen
 import com.rama.blelab.presentation.scanner.ScannerViewModel
@@ -165,6 +168,31 @@ fun BleAppNavigation(
         }
         composable("routerScanner") {
             RouterScannerScreen(
+                viewModel = routerScannerViewModel,
+                onBack = { navController.popBackStack() },
+                onRouterClick = { router ->
+                    routerScannerViewModel.selectRouter(router)
+                    navController.navigate("routerDetails")
+                }
+            )
+        }
+        composable("routerDetails") {
+            val selectedRouter by routerScannerViewModel.selectedRouter.collectAsState()
+            RouterDetailsScreen(
+                router = selectedRouter,
+                onBack = { navController.popBackStack() },
+                onOpenConnectedTools = { navController.navigate("routerTools") }
+            )
+        }
+        composable("routerTools") {
+            RouterToolsScreen(
+                viewModel = routerScannerViewModel,
+                onBack = { navController.popBackStack() },
+                onOpenSpeedGraph = { navController.navigate("speedGraph") }
+            )
+        }
+        composable("speedGraph") {
+            SpeedGraphScreen(
                 viewModel = routerScannerViewModel,
                 onBack = { navController.popBackStack() }
             )
