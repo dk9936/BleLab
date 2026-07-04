@@ -1,6 +1,9 @@
 package com.rama.blelab.data.repository
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattService
 import android.content.Context
 import android.util.Log
 import com.polidea.rxandroidble2.RxBleClient
@@ -27,6 +30,7 @@ class AndroidBluetoothRepository(
     
     private var scanDisposable: Disposable? = null
     private var connectionDisposable: Disposable? = null
+    private var gattDiscoveryDisposable: Disposable? = null
     private val notificationDisposables = CompositeDisposable()
     private var rxBleConnection: RxBleConnection? = null
 
@@ -38,6 +42,9 @@ class AndroidBluetoothRepository(
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+
+    private val _gattDetailsState = MutableStateFlow<GattDetailsState>(GattDetailsState.Idle)
+    override val gattDetailsState: StateFlow<GattDetailsState> = _gattDetailsState.asStateFlow()
 
     private val _messages = MutableSharedFlow<BleMessage>(replay = 10, extraBufferCapacity = 20)
     override val messages: Flow<BleMessage> = _messages.asSharedFlow()
@@ -51,6 +58,14 @@ class AndroidBluetoothRepository(
 
     override fun startScanning() {
         if (_isScanning.value) return
+
+        val adapter = BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            _isScanning.value = false
+            _connectionState.value = ConnectionState.Error("Bluetooth is off. Turn it on to scan nearby devices.")
+            return
+        }
+
         _scannedDevices.value = emptyList()
         _isScanning.value = true
 
@@ -80,8 +95,54 @@ class AndroidBluetoothRepository(
         _isScanning.value = false
     }
 
+    override fun discoverGattDetails(address: String) {
+        stopScanning()
+        gattDiscoveryDisposable?.dispose()
+
+        val adapter = BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null || !adapter.isEnabled) {
+            _gattDetailsState.value = GattDetailsState.Error("Bluetooth is off. Enable Bluetooth to discover GATT services.")
+            return
+        }
+
+        _gattDetailsState.value = GattDetailsState.Loading
+
+        val rxBleDevice = rxBleClient.getBleDevice(address)
+        gattDiscoveryDisposable = rxBleDevice.establishConnection(false)
+            .flatMapSingle { connection ->
+                connection.discoverServices()
+            }
+            .firstOrError()
+            .subscribe(
+                { services ->
+                    _gattDetailsState.value = GattDetailsState.Success(
+                        BleGattDetails(
+                            deviceName = rxBleDevice.name,
+                            address = rxBleDevice.macAddress,
+                            services = services.bluetoothGattServices.map { service ->
+                                service.toGattServiceInfo()
+                            }
+                        )
+                    )
+                },
+                { error ->
+                    _gattDetailsState.value = GattDetailsState.Error(
+                        error.message ?: "Unable to discover GATT services for this device."
+                    )
+                }
+            )
+    }
+
+    override fun clearGattDetails() {
+        gattDiscoveryDisposable?.dispose()
+        gattDiscoveryDisposable = null
+        _gattDetailsState.value = GattDetailsState.Idle
+    }
+
     override fun connect(address: String) {
         stopScanning()
+        gattDiscoveryDisposable?.dispose()
+        gattDiscoveryDisposable = null
         disconnect()
         
         _connectionState.value = ConnectionState.Connecting
@@ -137,6 +198,8 @@ class AndroidBluetoothRepository(
     }
 
     override fun disconnect() {
+        gattDiscoveryDisposable?.dispose()
+        gattDiscoveryDisposable = null
         connectionDisposable?.dispose()
         connectionDisposable = null
         notificationDisposables.clear()
@@ -229,5 +292,34 @@ class AndroidBluetoothRepository(
                 )
             )
         }
+    }
+
+    private fun BluetoothGattService.toGattServiceInfo(): GattServiceInfo {
+        return GattServiceInfo(
+            uuid = uuid.toString(),
+            type = if (type == BluetoothGattService.SERVICE_TYPE_PRIMARY) "Primary" else "Secondary",
+            characteristics = characteristics.map { characteristic ->
+                GattCharacteristicInfo(
+                    uuid = characteristic.uuid.toString(),
+                    properties = characteristic.properties.toPropertyLabels(),
+                    descriptors = characteristic.descriptors.map { descriptor ->
+                        descriptor.uuid.toString()
+                    }
+                )
+            }
+        )
+    }
+
+    private fun Int.toPropertyLabels(): List<String> {
+        val labels = mutableListOf<String>()
+        if (this and BluetoothGattCharacteristic.PROPERTY_BROADCAST != 0) labels.add("Broadcast")
+        if (this and BluetoothGattCharacteristic.PROPERTY_READ != 0) labels.add("Read")
+        if (this and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0) labels.add("Write Without Response")
+        if (this and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) labels.add("Write")
+        if (this and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) labels.add("Notify")
+        if (this and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) labels.add("Indicate")
+        if (this and BluetoothGattCharacteristic.PROPERTY_SIGNED_WRITE != 0) labels.add("Signed Write")
+        if (this and BluetoothGattCharacteristic.PROPERTY_EXTENDED_PROPS != 0) labels.add("Extended Properties")
+        return labels.ifEmpty { listOf("No properties") }
     }
 }

@@ -29,6 +29,8 @@ class TerminalViewModel(
     private val _macros = MutableStateFlow<List<Macro>>(emptyList())
     val macros: StateFlow<List<Macro>> = _macros.asStateFlow()
 
+    private var activeResponseParserMacro: Macro? = null
+
     init {
         // Load macros from storage
         macroDataStore.macros.onEach { loadedMacros ->
@@ -58,8 +60,12 @@ class TerminalViewModel(
             if (message.type == MessageType.RX) {
                 val results = mutableListOf<String>()
                 var bestParserName: String? = null
+                val parserMacros = activeResponseParserMacro
+                    ?.takeIf { it.formulas.isNotEmpty() }
+                    ?.let { listOf(it) }
+                    ?: _macros.value
 
-                _macros.value.forEach { macro ->
+                parserMacros.forEach { macro ->
                     macro.formulas.forEach { formula ->
                         val hexContent = message.content.replace(" ", "")
                         val patternMatch = formula.pattern?.replace(" ", "")?.let { 
@@ -70,7 +76,7 @@ class TerminalViewModel(
                             val parsed = applyFormula(formula, message.rawData)
                             if (parsed != null) {
                                 results.add("${formula.name}: $parsed")
-                                if (bestParserName == null) bestParserName = formula.name
+                                if (bestParserName == null) bestParserName = macro.name
                             }
                         }
                     }
@@ -79,7 +85,8 @@ class TerminalViewModel(
                 if (results.isNotEmpty()) {
                     processedMessage = processedMessage.copy(
                         parsedContent = results.joinToString("\n"),
-                        parserName = if (results.size > 1) "Multi-Field" else bestParserName
+                        parserName = activeResponseParserMacro?.name
+                            ?: if (results.size > 1) "Multi-Field" else bestParserName
                     )
                 }
             }
@@ -177,6 +184,25 @@ class TerminalViewModel(
         }
     }
 
+    fun importMacros(importedMacros: List<Macro>): Int {
+        val validMacros = importedMacros.filter { it.name.isNotBlank() && it.command.isNotBlank() }
+        if (validMacros.isEmpty()) return 0
+
+        val merged = _macros.value.toMutableList()
+        validMacros.forEach { imported ->
+            val existingIndex = merged.indexOfFirst { it.name.equals(imported.name, ignoreCase = true) }
+            if (existingIndex >= 0) {
+                merged[existingIndex] = imported
+            } else {
+                merged.add(imported)
+            }
+        }
+
+        _macros.value = merged
+        viewModelScope.launch { macroDataStore.saveMacros(merged) }
+        return validMacros.size
+    }
+
     fun updateMacro(oldMacro: Macro, newName: String, newCommand: String, formulas: List<ParsingFormula>) {
         android.util.Log.d("MACRO_STORAGE", "Updating Macro: ${oldMacro.name} -> $newName with ${formulas.size} formulas")
         val newList = _macros.value.map { 
@@ -202,6 +228,7 @@ class TerminalViewModel(
         matchingMacro?.let { 
             android.util.Log.d("BLE_COMMAND", "Command corresponds to Macro: ${it.name}. Expecting response for ${it.formulas.size} formulas.")
         }
+        activeResponseParserMacro = matchingMacro?.takeIf { it.formulas.isNotEmpty() }
 
         useCases.sendMessage(content, isHex)
     }

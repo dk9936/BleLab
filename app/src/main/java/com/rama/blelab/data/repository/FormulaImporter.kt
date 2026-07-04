@@ -8,6 +8,7 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.rama.blelab.domain.model.FormulaDataType
 import com.rama.blelab.domain.model.ParsingFormula
+import com.rama.blelab.domain.repository.Macro
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -23,10 +24,267 @@ import java.util.zip.ZipInputStream
 data class ParserImportResult(
     val formulas: List<ParsingFormula>,
     val parserName: String? = null,
-    val commandHex: String? = null
+    val commandHex: String? = null,
+    val macroName: String? = null,
+    val macroCommand: String? = null
+)
+
+data class MacroImportDefinition(
+    val name: String? = null,
+    val command: String? = null,
+    val formulas: List<ParsingFormula> = emptyList()
 )
 
 class FormulaImporter(private val context: Context) {
+    companion object {
+        fun parseJsonMacroDefinition(jsonText: String): MacroImportDefinition {
+            val trimmed = jsonText.trim()
+            return try {
+                if (trimmed.startsWith("{")) {
+                    jsonObjectToMacroDefinition(JSONObject(trimmed))
+                } else {
+                    MacroImportDefinition(formulas = parseJsonFormulasStatic(trimmed))
+                }
+            } catch (e: Exception) {
+                safeLogError("JSON macro definition parse error", e)
+                MacroImportDefinition()
+            }
+        }
+
+        fun parseJsonMacroDefinitions(jsonText: String): List<MacroImportDefinition> {
+            val trimmed = jsonText.trim()
+            return try {
+                when {
+                    trimmed.startsWith("[") -> jsonArrayToMacroDefinitions(JSONArray(trimmed))
+                    trimmed.startsWith("{") -> {
+                        val obj = JSONObject(trimmed)
+                        val nested = firstArrayFromObject(obj, "macros", "micros", "quickCommands", "quick_commands", "commands")
+                        if (nested != null) {
+                            jsonArrayToMacroDefinitions(nested)
+                        } else {
+                            listOf(jsonObjectToMacroDefinition(obj))
+                        }
+                    }
+                    else -> emptyList()
+                }.filter { !it.name.isNullOrBlank() && !it.command.isNullOrBlank() }
+            } catch (e: Exception) {
+                safeLogError("JSON macro definitions parse error", e)
+                emptyList()
+            }
+        }
+
+        private fun jsonArrayToMacroDefinitions(array: JSONArray): List<MacroImportDefinition> {
+            val list = mutableListOf<MacroImportDefinition>()
+            for (i in 0 until array.length()) {
+                when (val value = array.opt(i)) {
+                    is JSONObject -> {
+                        if (looksLikeMacroDefinition(value)) {
+                            list.add(jsonObjectToMacroDefinition(value))
+                        } else {
+                            firstArrayFromObject(value, "macros", "micros", "quickCommands", "quick_commands", "commands")
+                                ?.let { list.addAll(jsonArrayToMacroDefinitions(it)) }
+                        }
+                    }
+                    is JSONArray -> list.addAll(jsonArrayToMacroDefinitions(value))
+                }
+            }
+            return list
+        }
+
+        private fun jsonObjectToMacroDefinition(obj: JSONObject): MacroImportDefinition {
+            val formulas = jsonObjectToFormulasStatic(obj)
+            return MacroImportDefinition(
+                name = firstStringFromObject(obj, "name", "macroName", "microName", "label", "title").ifBlank { null },
+                command = firstStringFromObject(obj, "command", "commandHex", "sendCommandHex", "send_command_hex", "macroCommand", "value").ifBlank { null },
+                formulas = formulas
+            )
+        }
+
+        private fun looksLikeMacroDefinition(obj: JSONObject): Boolean {
+            val hasName = firstStringFromObject(obj, "name", "macroName", "microName", "label", "title").isNotBlank()
+            val hasCommand = firstStringFromObject(obj, "command", "commandHex", "sendCommandHex", "send_command_hex", "macroCommand", "value").isNotBlank()
+            return hasName && hasCommand
+        }
+
+        private fun firstArrayFromObject(obj: JSONObject, vararg keys: String): JSONArray? {
+            keys.forEach { key ->
+                val value = obj.opt(key)
+                if (value is JSONArray) return value
+            }
+            return null
+        }
+
+        private fun parseJsonFormulasStatic(jsonText: String): List<ParsingFormula> {
+            val list = mutableListOf<ParsingFormula>()
+            try {
+                val trimmed = jsonText.trim()
+                if (trimmed.startsWith("[")) {
+                    val array = JSONArray(trimmed)
+                    list.addAll(jsonArrayToFormulasStatic(array))
+                } else {
+                    val obj = JSONObject(trimmed)
+                    list.addAll(jsonObjectToFormulasStatic(obj))
+                }
+            } catch (e: Exception) {
+                safeLogError("JSON parse error", e)
+            }
+            return list
+        }
+
+        private fun safeLogError(message: String, error: Throwable) {
+            try {
+                android.util.Log.e("FORMULA_IMPORT", message, error)
+            } catch (_: RuntimeException) {
+                println("FORMULA_IMPORT: $message - ${error.message}")
+            }
+        }
+
+        private fun jsonArrayToFormulasStatic(array: JSONArray): List<ParsingFormula> {
+            val list = mutableListOf<ParsingFormula>()
+            for (i in 0 until array.length()) {
+                when (val value = array.opt(i)) {
+                    is JSONObject -> list.addAll(jsonObjectToFormulasStatic(value))
+                    is JSONArray -> list.addAll(jsonArrayToFormulasStatic(value))
+                }
+            }
+            return list
+        }
+
+        private fun jsonObjectToFormulasStatic(obj: JSONObject): List<ParsingFormula> {
+            val nestedKeys = listOf(
+                "formulas",
+                "parsers",
+                "responseParsers",
+                "response_parsers",
+                "response_parser",
+                "fields",
+                "values",
+                "measurements",
+                "items"
+            )
+            val nested = mutableListOf<ParsingFormula>()
+
+            nestedKeys.forEach { key ->
+                when (val value = obj.opt(key)) {
+                    is JSONArray -> nested.addAll(jsonArrayToFormulasStatic(value))
+                    is JSONObject -> nested.addAll(jsonObjectToFormulasStatic(value))
+                }
+            }
+
+            return if (looksLikeFormulaStatic(obj)) nested + jsonObjectToFormulaStatic(obj) else nested
+        }
+
+        private fun looksLikeFormulaStatic(obj: JSONObject): Boolean {
+            if (looksLikeMacroDefinition(obj)) return false
+
+            val formulaKeys = listOf(
+                "name",
+                "label",
+                "field",
+                "pattern",
+                "offset",
+                "byteOffset",
+                "byte_offset",
+                "start",
+                "length",
+                "size",
+                "bytes",
+                "dataType",
+                "data_type",
+                "type",
+                "multiplier",
+                "scale",
+                "unit",
+                "units"
+            )
+            return formulaKeys.any { obj.has(it) }
+        }
+
+        private fun jsonObjectToFormulaStatic(obj: JSONObject): ParsingFormula {
+            return ParsingFormula(
+                name = firstStringFromObject(obj, "name", "label", "field", "key", "id").ifBlank { "Unknown" },
+                pattern = if (obj.has("pattern") && !obj.isNull("pattern")) obj.getString("pattern") else null,
+                offset = firstIntFromObject(obj, "offset", "byteOffset", "byte_offset", "start"),
+                length = firstIntFromObject(obj, "length", "size", "bytes"),
+                dataType = parseDataTypeStatic(firstStringFromObject(obj, "dataType", "data_type", "type").ifBlank { "HEX" }),
+                multiplier = formulaMultiplierStatic(obj),
+                unit = firstStringFromObject(obj, "unit", "units")
+            )
+        }
+
+        private fun formulaMultiplierStatic(obj: JSONObject): Double {
+            val explicitMultiplier = firstNullableDoubleFromObject(obj, "multiplier", "scale")
+            if (explicitMultiplier != null) return explicitMultiplier
+
+            val divisor = firstNullableDoubleFromObject(obj, "divisor", "divideBy", "divide_by")
+            if (divisor != null && divisor != 0.0) return 1.0 / divisor
+
+            val decimalPlaces = firstNullableIntFromObject(obj, "decimalPlaces", "decimal_places", "decimals")
+            if (decimalPlaces != null && decimalPlaces > 0) {
+                return 1.0 / Math.pow(10.0, decimalPlaces.toDouble())
+            }
+
+            return 1.0
+        }
+
+        private fun firstStringFromObject(obj: JSONObject, vararg keys: String): String {
+            keys.forEach { key ->
+                if (obj.has(key) && !obj.isNull(key)) return obj.optString(key, "")
+            }
+            return ""
+        }
+
+        private fun firstIntFromObject(obj: JSONObject, vararg keys: String): Int {
+            return firstNullableIntFromObject(obj, *keys) ?: 0
+        }
+
+        private fun firstNullableIntFromObject(obj: JSONObject, vararg keys: String): Int? {
+            keys.forEach { key ->
+                if (obj.has(key) && !obj.isNull(key)) {
+                    when (val value = obj.opt(key)) {
+                        is Number -> return value.toInt()
+                        is String -> value.toIntOrNull()?.let { return it }
+                    }
+                }
+            }
+            return null
+        }
+
+        private fun firstNullableDoubleFromObject(obj: JSONObject, vararg keys: String): Double? {
+            keys.forEach { key ->
+                if (obj.has(key) && !obj.isNull(key)) {
+                    when (val value = obj.opt(key)) {
+                        is Number -> return value.toDouble()
+                        is String -> value.toDoubleOrNull()?.let { return it }
+                    }
+                }
+            }
+            return null
+        }
+
+        private fun parseDataTypeStatic(typeStr: String): FormulaDataType {
+            val normalized = typeStr.uppercase().replace(" ", "").replace("_", "")
+            return when (normalized) {
+                "INT8" -> FormulaDataType.INT_8
+                "UINT8" -> FormulaDataType.UINT_8
+                "INT16", "INT16BE" -> FormulaDataType.INT_16_BE
+                "INT16LE" -> FormulaDataType.INT_16_LE
+                "UINT16", "UINT16BE" -> FormulaDataType.UINT_16_BE
+                "UINT16LE" -> FormulaDataType.UINT_16_LE
+                "INT32", "INT32BE" -> FormulaDataType.INT_32_BE
+                "INT32LE" -> FormulaDataType.INT_32_LE
+                "UINT32", "UINT32BE" -> FormulaDataType.UINT_32_BE
+                "UINT32LE" -> FormulaDataType.UINT_32_LE
+                "FLOAT", "FLOAT32", "FLOAT32BE" -> FormulaDataType.FLOAT_32_BE
+                "FLOAT32LE" -> FormulaDataType.FLOAT_32_LE
+                "STRING" -> FormulaDataType.STRING
+                "HEX" -> FormulaDataType.HEX
+                else -> {
+                    try { FormulaDataType.valueOf(typeStr.uppercase()) } catch (_: Exception) { FormulaDataType.HEX }
+                }
+            }
+        }
+    }
 
     init {
         try {
@@ -114,6 +372,37 @@ class FormulaImporter(private val context: Context) {
         }
 
         ParserImportResult(emptyList())
+    }
+
+    suspend fun importJsonMacrosFromUri(uri: Uri, mimeType: String?): List<Macro> = withContext(Dispatchers.IO) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val fileName = getDisplayName(uri).lowercase().ifBlank {
+                    uri.path?.lowercase() ?: ""
+                }
+                val actualMime = (mimeType ?: context.contentResolver.getType(uri)).orEmpty().lowercase()
+
+                if (!isJsonFile(fileName, actualMime)) {
+                    return@withContext emptyList()
+                }
+
+                return@withContext parseJsonMacroDefinitions(
+                    BufferedReader(InputStreamReader(inputStream)).readText()
+                ).mapNotNull { definition ->
+                    val name = definition.name?.trim().orEmpty()
+                    val command = definition.command?.trim().orEmpty()
+                    if (name.isBlank() || command.isBlank()) {
+                        null
+                    } else {
+                        Macro(name = name, command = command, formulas = definition.formulas)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("FORMULA_IMPORT", "JSON macros import error", e)
+        }
+
+        emptyList()
     }
 
     private fun isJsonFile(fileName: String, mimeType: String): Boolean {
@@ -221,11 +510,13 @@ class FormulaImporter(private val context: Context) {
         return try {
             val trimmed = jsonText.trim()
             if (trimmed.startsWith("{")) {
-                val obj = JSONObject(trimmed)
+                val macroDefinition = parseJsonMacroDefinition(trimmed)
                 ParserImportResult(
-                    formulas = jsonObjectToFormulas(obj),
-                    parserName = firstString(obj, "parserName", "parser_name", "name").ifBlank { null },
-                    commandHex = firstString(obj, "sendCommandHex", "commandHex", "command", "send_command_hex").ifBlank { null }
+                    formulas = macroDefinition.formulas,
+                    parserName = macroDefinition.name ?: firstString(JSONObject(trimmed), "parserName", "parser_name", "name").ifBlank { null },
+                    commandHex = macroDefinition.command ?: firstString(JSONObject(trimmed), "sendCommandHex", "commandHex", "command", "send_command_hex").ifBlank { null },
+                    macroName = macroDefinition.name,
+                    macroCommand = macroDefinition.command
                 )
             } else {
                 ParserImportResult(parseJsonFormulas(trimmed))
@@ -315,6 +606,10 @@ class FormulaImporter(private val context: Context) {
     }
 
     private fun looksLikeFormula(obj: JSONObject): Boolean {
+        if (firstString(obj, "command", "commandHex", "sendCommandHex", "send_command_hex", "macroCommand", "value").isNotBlank()) {
+            return false
+        }
+
         val formulaKeys = listOf(
             "name",
             "label",

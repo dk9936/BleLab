@@ -57,6 +57,28 @@ fun TerminalScreen(
     var macroToEdit by remember { mutableStateOf<Macro?>(null) }
     var isAddingMacro by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val macroImportPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri ->
+            uri?.let {
+                scope.launch {
+                    val importedMacros = formulaImporter.importJsonMacrosFromUri(
+                        it,
+                        context.contentResolver.getType(it)
+                    )
+                    val importedCount = viewModel.importMacros(importedMacros)
+                    Toast.makeText(
+                        context,
+                        if (importedCount > 0) "Imported $importedCount macro(s)" else "No valid macros found in JSON",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    )
 
     if (isAddingMacro) {
         MacroDialog(
@@ -119,9 +141,6 @@ fun TerminalScreen(
                     IconButton(onClick = { viewModel.clearLogs() }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear Logs")
                     }
-                    IconButton(onClick = { /* Settings */ }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF8F9FA))
             )
@@ -148,6 +167,7 @@ fun TerminalScreen(
                 macros = macros,
                 onMacroClick = { viewModel.sendMessage(it.command) },
                 onAddClick = { isAddingMacro = true },
+                onImportClick = { macroImportPicker.launch(arrayOf("application/json", "text/json")) },
                 onLongClick = { macroToEdit = it }
             )
             
@@ -274,6 +294,7 @@ fun QuickCommands(
     macros: List<Macro>,
     onMacroClick: (Macro) -> Unit,
     onAddClick: () -> Unit,
+    onImportClick: () -> Unit,
     onLongClick: (Macro) -> Unit
 ) {
     LazyRow(
@@ -289,6 +310,16 @@ fun QuickCommands(
                     .background(Color(0xFFF1F3F4), RoundedCornerShape(8.dp))
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Add Macro", tint = Color(0xFF1976D2))
+            }
+        }
+        item {
+            IconButton(
+                onClick = onImportClick,
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(Color(0xFFF1F3F4), RoundedCornerShape(8.dp))
+            ) {
+                Icon(Icons.Default.UploadFile, contentDescription = "Import Macros JSON", tint = Color(0xFF1976D2))
             }
         }
         items(macros) { macro ->
@@ -347,17 +378,25 @@ fun MacroDialog(
                         context.contentResolver.getType(it)
                     )
                     formulas = imported.formulas
-                    imported.commandHex?.let { importedCommand ->
+                    imported.macroCommand?.let { importedCommand ->
                         command = importedCommand
+                    }
+                    imported.macroName?.let { importedName ->
+                        name = importedName
                     }
                     if (name.isBlank()) {
                         imported.parserName?.let { importedName ->
                             name = importedName
                         }
                     }
+                    if (command.isBlank()) {
+                        imported.commandHex?.let { importedCommand ->
+                            command = importedCommand
+                        }
+                    }
                     Toast.makeText(
                         context,
-                        "Imported ${imported.formulas.size} parser field(s)",
+                        if (imported.macroName != null || imported.macroCommand != null) "Imported macro from JSON" else "Imported ${imported.formulas.size} parser field(s)",
                         Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -400,7 +439,7 @@ fun MacroDialog(
                     ) {
                         Icon(Icons.Default.UploadFile, null)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Import JSON Parser", fontSize = 12.sp)
+                        Text("Import JSON Micro", fontSize = 12.sp)
                     }
                 } else {
                     formulas.forEach { formula ->
@@ -424,7 +463,7 @@ fun MacroDialog(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         TextButton(onClick = { filePicker.launch(arrayOf("application/json", "text/json")) }) {
-                            Text("Replace JSON")
+                            Text("Replace JSON Micro")
                         }
                         TextButton(
                             onClick = { formulas = emptyList() },

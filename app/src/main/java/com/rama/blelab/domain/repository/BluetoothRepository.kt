@@ -10,14 +10,42 @@ interface BluetoothRepository {
     val scannedDevices: StateFlow<List<BleDevice>>
     val isScanning: StateFlow<Boolean>
     val connectionState: StateFlow<ConnectionState>
+    val gattDetailsState: StateFlow<GattDetailsState>
     val messages: Flow<BleMessage>
 
     fun startScanning()
     fun stopScanning()
+    fun discoverGattDetails(address: String)
+    fun clearGattDetails()
     fun connect(address: String)
     fun disconnect()
     fun sendMessage(content: String, isHex: Boolean = false)
 }
+
+sealed class GattDetailsState {
+    object Idle : GattDetailsState()
+    object Loading : GattDetailsState()
+    data class Success(val details: BleGattDetails) : GattDetailsState()
+    data class Error(val message: String) : GattDetailsState()
+}
+
+data class BleGattDetails(
+    val deviceName: String?,
+    val address: String,
+    val services: List<GattServiceInfo>
+)
+
+data class GattServiceInfo(
+    val uuid: String,
+    val type: String,
+    val characteristics: List<GattCharacteristicInfo>
+)
+
+data class GattCharacteristicInfo(
+    val uuid: String,
+    val properties: List<String>,
+    val descriptors: List<String>
+)
 
 sealed class ConnectionState {
     object Disconnected : ConnectionState()
