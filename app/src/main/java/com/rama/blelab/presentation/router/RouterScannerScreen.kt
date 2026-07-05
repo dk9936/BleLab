@@ -33,12 +33,15 @@ import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Laptop
+import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Watch
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -51,6 +54,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -66,7 +70,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -376,12 +382,22 @@ fun RouterToolsScreen(
 ) {
     val context = LocalContext.current
     val toolsState by viewModel.routerToolsState.collectAsState()
+    val nsdState by viewModel.nsdScannerState.collectAsState()
+    var selectedNsdService by remember { mutableStateOf<NsdServiceDetails?>(null) }
 
     DisposableEffect(Unit) {
         viewModel.startConnectedRouterToolsLiveUpdates()
         onDispose {
             viewModel.stopConnectedRouterToolsLiveUpdates()
+            viewModel.stopNsdScan()
         }
+    }
+
+    selectedNsdService?.let { service ->
+        NsdServiceDetailsDialog(
+            service = service,
+            onDismiss = { selectedNsdService = null }
+        )
     }
 
     Scaffold(
@@ -428,6 +444,15 @@ fun RouterToolsScreen(
                 RouterInternetSection(
                     state = toolsState,
                     onSpeedClick = onOpenSpeedGraph
+                )
+            }
+
+            item {
+                NsdServicesSection(
+                    state = nsdState,
+                    onScanClick = viewModel::startNsdScan,
+                    onStopClick = viewModel::stopNsdScan,
+                    onServiceClick = { selectedNsdService = it }
                 )
             }
 
@@ -529,6 +554,225 @@ private fun RouterInternetSection(
                 )
             }
             RouterDetailRow("Live Update", state.lastUpdatedMillis?.let { "Every 5 seconds" } ?: "Starting")
+        }
+    }
+}
+
+@Composable
+private fun NsdServicesSection(
+    state: NsdScannerState,
+    onScanClick: () -> Unit,
+    onStopClick: () -> Unit,
+    onServiceClick: (NsdServiceDetails) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xFFF8F9FA)
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Lan, contentDescription = null, tint = Color(0xFF1976D2))
+                Spacer(modifier = Modifier.size(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("NSD Services", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFF111827))
+                    Text(
+                        text = if (state.isScanning) "Scanning local mDNS services" else "${state.services.size} service(s) found",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
+                IconButton(onClick = if (state.isScanning) onStopClick else onScanClick) {
+                    if (state.isScanning) {
+                        Icon(Icons.Default.StopCircle, contentDescription = "Stop NSD scan", tint = Color(0xFFD32F2F))
+                    } else {
+                        Icon(Icons.Default.Search, contentDescription = "Scan NSD services", tint = Color(0xFF1976D2))
+                    }
+                }
+            }
+
+            state.errorMessage?.let { message ->
+                Text(message, color = Color(0xFFD32F2F), fontSize = 12.sp)
+            }
+
+            if (state.isScanning && state.services.isEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF1976D2))
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("Listening for services...", color = Color.Gray, fontSize = 13.sp)
+                }
+            }
+
+            state.services.take(8).forEach { service ->
+                NsdServiceItem(service = service, onClick = { onServiceClick(service) })
+            }
+
+            if (state.services.size > 8) {
+                Text(
+                    text = "+${state.services.size - 8} more service(s)",
+                    color = Color.Gray,
+                    fontSize = 12.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NsdServiceItem(
+    service: NsdServiceDetails,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        color = Color.White,
+        tonalElevation = 1.dp,
+        shadowElevation = 1.dp
+    ) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Devices, contentDescription = null, tint = Color(0xFF00796B))
+            Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                Text(service.name, fontWeight = FontWeight.Bold, color = Color(0xFF111827), fontSize = 14.sp)
+                Text(service.type, color = Color.Gray, fontSize = 12.sp)
+            }
+            Text(
+                text = listOfNotNull(service.host, service.port?.let { ":$it" }).joinToString(""),
+                color = Color(0xFF1976D2),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun NsdServiceDetailsDialog(
+    service: NsdServiceDetails,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val targets = service.connectionTargets()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(service.name) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Service Details", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                RouterDetailRow("Name", service.name)
+                RouterDetailRow("Type", service.type)
+                RouterDetailRow("Host", service.host ?: "Resolving unavailable")
+                RouterDetailRow("Port", service.port?.toString() ?: "Unknown")
+                RouterDetailRow("Endpoint", service.endpointText())
+
+                if (targets.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Connect", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    targets.forEach { target ->
+                        Button(
+                            onClick = {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.url)))
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = target.color)
+                        ) {
+                            Icon(target.icon, contentDescription = null)
+                            Spacer(modifier = Modifier.size(8.dp))
+                            Text(target.label)
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(service.toShareText()))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64))
+                ) {
+                    Text("Copy Full Details")
+                }
+
+                if (service.attributes.isEmpty()) {
+                    RouterDetailRow("TXT", "No attributes")
+                } else {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("TXT Attributes", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    service.attributes.forEach { (key, value) ->
+                        RouterDetailRow(key, value.ifBlank { "<empty>" })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+private data class NsdConnectionTarget(
+    val label: String,
+    val url: String,
+    val color: Color,
+    val icon: ImageVector
+)
+
+private fun NsdServiceDetails.connectionTargets(): List<NsdConnectionTarget> {
+    val hostValue = host ?: return emptyList()
+    val portValue = port ?: return emptyList()
+    val httpUrl = "http://$hostValue:$portValue"
+    val httpsUrl = "https://$hostValue:$portValue"
+    val lowerType = type.lowercase()
+
+    return when {
+        lowerType.contains("_https") -> listOf(
+            NsdConnectionTarget("Open HTTPS", httpsUrl, Color(0xFF00796B), Icons.Default.Lan),
+            NsdConnectionTarget("Try HTTP", httpUrl, Color(0xFF1976D2), Icons.Default.Router)
+        )
+        lowerType.contains("_http") ||
+            lowerType.contains("_ipp") ||
+            lowerType.contains("_printer") ||
+            lowerType.contains("_arduino") ||
+            lowerType.contains("_esphomelib") -> listOf(
+            NsdConnectionTarget("Open HTTP", httpUrl, Color(0xFF1976D2), Icons.Default.Router),
+            NsdConnectionTarget("Try HTTPS", httpsUrl, Color(0xFF00796B), Icons.Default.Lan)
+        )
+        else -> listOf(
+            NsdConnectionTarget("Open HTTP", httpUrl, Color(0xFF1976D2), Icons.Default.Router),
+            NsdConnectionTarget("Try HTTPS", httpsUrl, Color(0xFF00796B), Icons.Default.Lan)
+        )
+    }
+}
+
+private fun NsdServiceDetails.endpointText(): String {
+    val hostValue = host ?: return "Unavailable"
+    val portValue = port ?: return hostValue
+    return "$hostValue:$portValue"
+}
+
+private fun NsdServiceDetails.toShareText(): String {
+    return buildString {
+        appendLine("NSD Service")
+        appendLine("Name: $name")
+        appendLine("Type: $type")
+        appendLine("Host: ${host ?: "Unavailable"}")
+        appendLine("Port: ${port ?: "Unknown"}")
+        appendLine("Endpoint: ${endpointText()}")
+        appendLine("HTTP: ${host?.let { h -> port?.let { p -> "http://$h:$p" } } ?: "Unavailable"}")
+        appendLine("HTTPS: ${host?.let { h -> port?.let { p -> "https://$h:$p" } } ?: "Unavailable"}")
+        if (attributes.isNotEmpty()) {
+            appendLine("TXT:")
+            attributes.forEach { (key, value) ->
+                appendLine("$key=$value")
+            }
         }
     }
 }

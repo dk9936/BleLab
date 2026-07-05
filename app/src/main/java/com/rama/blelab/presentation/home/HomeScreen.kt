@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -39,7 +40,8 @@ import androidx.compose.ui.unit.sp
 fun HomeScreen(
     onBleLabClick: () -> Unit,
     onWebSocketLabClick: () -> Unit,
-    onRouterScannerClick: () -> Unit
+    onRouterScannerClick: () -> Unit,
+    onEspTesterClick: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -100,6 +102,15 @@ fun HomeScreen(
                 iconBackground = Color(0xFFFFF3E0),
                 iconTint = Color(0xFFF57C00),
                 onClick = onRouterScannerClick
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            HomeOption(
+                title = "ESP Tester",
+                subtitle = "Test ESP32/ESP8266 HTTP endpoints, GPIO actions, and firmware status.",
+                icon = Icons.Default.Memory,
+                iconBackground = Color(0xFFE0F2F1),
+                iconTint = Color(0xFF00796B),
+                onClick = onEspTesterClick
             )
         }
     }

@@ -16,8 +16,11 @@ import androidx.navigation.compose.rememberNavController
 import com.rama.blelab.data.repository.AndroidBluetoothRepository
 import com.rama.blelab.data.repository.FormulaImporter
 import com.rama.blelab.data.repository.MacroDataStore
+import com.rama.blelab.data.repository.ScannerProfileDataStore
 import com.rama.blelab.domain.repository.BluetoothRepository
 import com.rama.blelab.domain.usecase.*
+import com.rama.blelab.presentation.esp.EspTesterScreen
+import com.rama.blelab.presentation.esp.EspTesterViewModel
 import com.rama.blelab.presentation.home.HomeScreen
 import com.rama.blelab.presentation.router.RouterDetailsScreen
 import com.rama.blelab.presentation.router.RouterScannerScreen
@@ -25,6 +28,7 @@ import com.rama.blelab.presentation.router.RouterScannerViewModel
 import com.rama.blelab.presentation.router.RouterToolsScreen
 import com.rama.blelab.presentation.router.SpeedGraphScreen
 import com.rama.blelab.presentation.scanner.DeviceDetailsScreen
+import com.rama.blelab.presentation.scanner.ScannerRadarScreen
 import com.rama.blelab.presentation.scanner.ScannerScreen
 import com.rama.blelab.presentation.scanner.ScannerViewModel
 import com.rama.blelab.presentation.terminal.TerminalScreen
@@ -47,6 +51,10 @@ class MainActivity : ComponentActivity() {
         FormulaImporter(applicationContext)
     }
 
+    private val scannerProfileDataStore by lazy {
+        ScannerProfileDataStore(applicationContext)
+    }
+
     private val useCases by lazy {
         BleUseCases(
             startScan = StartScanUseCase(repository),
@@ -62,7 +70,7 @@ class MainActivity : ComponentActivity() {
     private val scannerViewModel: ScannerViewModel by viewModels {
         object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return ScannerViewModel(repository, useCases) as T
+                return ScannerViewModel(repository, useCases, scannerProfileDataStore) as T
             }
         }
     }
@@ -76,6 +84,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private val webSocketViewModel: WebSocketViewModel by viewModels()
+
+    private val espTesterViewModel: EspTesterViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return EspTesterViewModel(applicationContext) as T
+            }
+        }
+    }
 
     private val routerScannerViewModel: RouterScannerViewModel by viewModels {
         object : ViewModelProvider.Factory {
@@ -94,6 +110,7 @@ class MainActivity : ComponentActivity() {
                     scannerViewModel = scannerViewModel,
                     terminalViewModel = terminalViewModel,
                     webSocketViewModel = webSocketViewModel,
+                    espTesterViewModel = espTesterViewModel,
                     routerScannerViewModel = routerScannerViewModel,
                     formulaImporter = formulaImporter
                 )
@@ -107,6 +124,7 @@ fun BleAppNavigation(
     scannerViewModel: ScannerViewModel,
     terminalViewModel: TerminalViewModel,
     webSocketViewModel: WebSocketViewModel,
+    espTesterViewModel: EspTesterViewModel,
     routerScannerViewModel: RouterScannerViewModel,
     formulaImporter: FormulaImporter
 ) {
@@ -117,7 +135,8 @@ fun BleAppNavigation(
             HomeScreen(
                 onBleLabClick = { navController.navigate("scanner") },
                 onWebSocketLabClick = { navController.navigate("webSocket") },
-                onRouterScannerClick = { navController.navigate("routerScanner") }
+                onRouterScannerClick = { navController.navigate("routerScanner") },
+                onEspTesterClick = { navController.navigate("espTester") }
             )
         }
         composable("scanner") {
@@ -130,14 +149,25 @@ fun BleAppNavigation(
                 onConnectClick = { device ->
                     scannerViewModel.connect(device.address)
                     navController.navigate("terminal")
-                }
+                },
+                onRadarClick = { navController.navigate("scannerRadar") }
+            )
+        }
+        composable("scannerRadar") {
+            ScannerRadarScreen(
+                viewModel = scannerViewModel,
+                onBack = { navController.popBackStack() }
             )
         }
         composable("deviceDetails") {
             val selectedDevice by scannerViewModel.selectedDevice.collectAsState()
             val gattDetailsState by scannerViewModel.gattDetailsState.collectAsState()
+            val profiles by scannerViewModel.profiles.collectAsState()
+            val rssiHistory by scannerViewModel.rssiHistory.collectAsState()
             DeviceDetailsScreen(
                 device = selectedDevice,
+                profile = selectedDevice?.address?.let { profiles[it] },
+                history = selectedDevice?.address?.let { rssiHistory[it] }.orEmpty(),
                 gattDetailsState = gattDetailsState,
                 onBack = { navController.popBackStack() },
                 onDiscoverGattDetails = scannerViewModel::discoverGattDetails,
@@ -164,6 +194,12 @@ fun BleAppNavigation(
                     webSocketViewModel.disconnect()
                     navController.popBackStack()
                 }
+            )
+        }
+        composable("espTester") {
+            EspTesterScreen(
+                viewModel = espTesterViewModel,
+                onBack = { navController.popBackStack() }
             )
         }
         composable("routerScanner") {

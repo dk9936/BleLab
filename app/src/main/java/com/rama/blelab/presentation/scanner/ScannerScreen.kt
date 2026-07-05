@@ -6,12 +6,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Paint
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,13 +25,24 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.rama.blelab.domain.model.BleDevice
+import com.rama.blelab.domain.model.DeviceRssiPoint
+import com.rama.blelab.domain.model.MovementState
+import com.rama.blelab.domain.model.ScanListFilter
+import com.rama.blelab.domain.model.ScannerDeviceProfile
 import com.rama.blelab.domain.repository.GattCharacteristicInfo
 import com.rama.blelab.domain.repository.GattDetailsState
 import com.rama.blelab.domain.repository.GattServiceInfo
@@ -38,13 +52,22 @@ import com.rama.blelab.domain.repository.GattServiceInfo
 fun ScannerScreen(
     viewModel: ScannerViewModel,
     onDeviceClick: (BleDevice) -> Unit,
-    onConnectClick: (BleDevice) -> Unit
+    onConnectClick: (BleDevice) -> Unit,
+    onRadarClick: () -> Unit = {}
 ) {
     val devices by viewModel.devices.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
     val searchText by viewModel.searchText.collectAsState()
+    val profiles by viewModel.profiles.collectAsState()
+    val rssiHistory by viewModel.rssiHistory.collectAsState()
+    val isRecordingSession by viewModel.isRecordingSession.collectAsState()
+    val sessionEntries by viewModel.sessionEntries.collectAsState()
+    val scanListFilter by viewModel.scanListFilter.collectAsState()
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val bluetoothAdapter = remember(context) { BluetoothAdapter.getDefaultAdapter() }
+    var deviceToEdit by remember { mutableStateOf<BleDevice?>(null) }
+    var exportText by remember { mutableStateOf<String?>(null) }
 
     var hasPermissions by remember {
         mutableStateOf(PermissionUtils.hasPermissions(context))
@@ -125,6 +148,66 @@ fun ScannerScreen(
         }
     }
 
+    LaunchedEffect(Unit) {
+        viewModel.alertMessage.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    deviceToEdit?.let { device ->
+        val profile = profiles[device.address] ?: ScannerDeviceProfile(address = device.address)
+        DeviceProfileDialog(
+            device = device,
+            profile = profile,
+            onDismiss = { deviceToEdit = null },
+            onSave = { note, tag ->
+                viewModel.updateDeviceNotes(device.address, note, tag)
+                deviceToEdit = null
+            }
+        )
+    }
+
+    exportText?.let { text ->
+        AlertDialog(
+            onDismissRequest = { exportText = null },
+            title = { Text("Scan Export") },
+            text = {
+                Column {
+                    Text("CSV export is ready.", color = Color.Gray, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        color = Color(0xFFF5F5F5),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = text.take(1200),
+                            modifier = Modifier.padding(12.dp),
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(text))
+                        Toast.makeText(context, "Export copied", Toast.LENGTH_SHORT).show()
+                        exportText = null
+                    }
+                ) {
+                    Text("Copy")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { exportText = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -166,7 +249,30 @@ fun ScannerScreen(
                 },
                 isScanning = isScanning
             )
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onRadarClick,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Radar, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Open Signal Radar")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            ScannerFeatureControls(
+                isRecording = isRecordingSession,
+                sessionCount = sessionEntries.size,
+                onToggleRecording = viewModel::toggleSessionRecording,
+                onClearSession = viewModel::clearSession,
+                onExport = { exportText = viewModel.buildScanExport() }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ScanListFilterRow(
+                selectedFilter = scanListFilter,
+                onFilterSelected = viewModel::setScanListFilter
+            )
+            Spacer(modifier = Modifier.height(20.dp))
             Text("NEARBY DEVICES", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
             if (!isBluetoothEnabled) {
@@ -181,8 +287,14 @@ fun ScannerScreen(
                     items(devices) { device ->
                         DeviceItem(
                             device = device,
+                            profile = profiles[device.address] ?: ScannerDeviceProfile(address = device.address),
+                            history = rssiHistory[device.address].orEmpty(),
                             onDeviceClick = { onDeviceClick(device) },
-                            onConnect = { onConnectClick(device) }
+                            onConnect = { onConnectClick(device) },
+                            onToggleFavorite = { viewModel.toggleFavorite(device.address) },
+                            onToggleAlert = { viewModel.toggleAlert(device.address) },
+                            onToggleAutoConnect = { viewModel.toggleAutoConnect(device.address) },
+                            onEditProfile = { deviceToEdit = device }
                         )
                     }
                 }
@@ -206,6 +318,8 @@ private fun isBluetoothEnabled(bluetoothAdapter: BluetoothAdapter?, hasPermissio
 @Composable
 fun DeviceDetailsScreen(
     device: BleDevice?,
+    profile: ScannerDeviceProfile? = null,
+    history: List<DeviceRssiPoint> = emptyList(),
     gattDetailsState: GattDetailsState,
     onBack: () -> Unit,
     onDiscoverGattDetails: (String) -> Unit,
@@ -253,6 +367,10 @@ fun DeviceDetailsScreen(
                 .padding(16.dp)
         ) {
             DeviceDetailsHeader(device)
+            if (profile?.tag?.isNotBlank() == true || profile?.note?.isNotBlank() == true || history.size >= 2) {
+                Spacer(modifier = Modifier.height(16.dp))
+                DeviceProfileSummary(profile = profile, history = history)
+            }
             Spacer(modifier = Modifier.height(20.dp))
             DeviceDetailsSection(
                 rows = listOf(
@@ -278,6 +396,38 @@ fun DeviceDetailsScreen(
                 Icon(Icons.Default.BluetoothConnected, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Connect")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceProfileSummary(
+    profile: ScannerDeviceProfile?,
+    history: List<DeviceRssiPoint>
+) {
+    Surface(
+        color = Color(0xFFF8FAFC),
+        shape = RoundedCornerShape(8.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Profile", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (profile?.tag?.isNotBlank() == true) {
+                DetailRow(label = "Tag", value = profile.tag)
+            }
+            if (profile?.note?.isNotBlank() == true) {
+                DetailRow(label = "Notes", value = profile.note)
+            }
+            if (history.size >= 2) {
+                Text("RSSI History", color = Color.Gray, fontSize = 14.sp)
+                MiniRssiGraph(
+                    history = history,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                )
             }
         }
     }
@@ -523,6 +673,14 @@ private fun signalStrengthLabel(rssi: Int): String {
     }
 }
 
+private fun signalColor(rssi: Int): Color {
+    return when {
+        rssi >= -55 -> Color(0xFF22C55E)
+        rssi >= -72 -> Color(0xFFFACC15)
+        else -> Color(0xFFF97316)
+    }
+}
+
 @Composable
 fun BluetoothDisabledBanner(onEnableBluetooth: () -> Unit) {
     Surface(
@@ -643,7 +801,87 @@ fun SearchBar(
 }
 
 @Composable
-fun DeviceItem(device: BleDevice, onDeviceClick: () -> Unit, onConnect: () -> Unit) {
+private fun ScannerFeatureControls(
+    isRecording: Boolean,
+    sessionCount: Int,
+    onToggleRecording: () -> Unit,
+    onClearSession: () -> Unit,
+    onExport: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilterChip(
+            selected = isRecording,
+            onClick = onToggleRecording,
+            label = { Text(if (isRecording) "Recording" else "Record") },
+            leadingIcon = {
+                Icon(
+                    if (isRecording) Icons.Default.StopCircle else Icons.Default.FiberManualRecord,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        )
+        AssistChip(
+            onClick = onExport,
+            label = { Text("Export") },
+            leadingIcon = {
+                Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        )
+        AssistChip(
+            onClick = onClearSession,
+            enabled = sessionCount > 0,
+            label = { Text("$sessionCount rows") },
+            leadingIcon = {
+                Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        )
+    }
+}
+
+@Composable
+private fun ScanListFilterRow(
+    selectedFilter: ScanListFilter,
+    onFilterSelected: (ScanListFilter) -> Unit
+) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        items(ScanListFilter.values()) { filter ->
+            FilterChip(
+                selected = selectedFilter == filter,
+                onClick = { onFilterSelected(filter) },
+                label = { Text(filter.label) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = filter.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun DeviceItem(
+    device: BleDevice,
+    profile: ScannerDeviceProfile,
+    history: List<DeviceRssiPoint>,
+    onDeviceClick: () -> Unit,
+    onConnect: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onToggleAlert: () -> Unit,
+    onToggleAutoConnect: () -> Unit,
+    onEditProfile: () -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -659,9 +897,30 @@ fun DeviceItem(device: BleDevice, onDeviceClick: () -> Unit, onConnect: () -> Un
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(device.name ?: "Unknown Device", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(device.name ?: "Unknown Device", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        if (profile.favorite) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(18.dp))
+                        }
+                    }
                     Text(device.address, color = Color.Gray, fontSize = 14.sp)
+                    if (profile.tag.isNotBlank() || profile.note.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (profile.tag.isNotBlank()) {
+                                AssistChip(onClick = onEditProfile, label = { Text(profile.tag, fontSize = 11.sp) })
+                            }
+                            if (profile.note.isNotBlank()) {
+                                AssistChip(
+                                    onClick = onEditProfile,
+                                    label = { Text("Note", fontSize = 11.sp) },
+                                    leadingIcon = { Icon(Icons.Default.Notes, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                )
+                            }
+                        }
+                    }
                 }
                 Surface(
                     color = Color(0xFFC5CAE9),
@@ -674,6 +933,15 @@ fun DeviceItem(device: BleDevice, onDeviceClick: () -> Unit, onConnect: () -> Un
                     }
                 }
             }
+            if (history.size >= 2) {
+                Spacer(modifier = Modifier.height(12.dp))
+                MiniRssiGraph(
+                    history = history,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                )
+            }
             Spacer(modifier = Modifier.height(16.dp))
             Divider(color = Color(0xFFEEEEEE))
             Spacer(modifier = Modifier.height(12.dp))
@@ -685,16 +953,149 @@ fun DeviceItem(device: BleDevice, onDeviceClick: () -> Unit, onConnect: () -> Un
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(modifier = Modifier.size(8.dp).background(Color(0xFF03A9F4), RoundedCornerShape(4.dp)))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Ready to pair", fontSize = 14.sp, color = Color.Gray)
+                    Text(
+                        if (profile.autoConnect) "Auto-connect enabled" else signalStrengthLabel(device.rssi),
+                        fontSize = 14.sp,
+                        color = Color.Gray
+                    )
                 }
-                Button(
-                    onClick = onConnect,
-                    shape = RoundedCornerShape(20.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0056B3))
-                ) {
-                    Text("Connect")
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onToggleFavorite, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            if (profile.favorite) Icons.Default.Star else Icons.Default.StarBorder,
+                            contentDescription = "Favorite",
+                            tint = if (profile.favorite) Color(0xFFFFB300) else Color.Gray
+                        )
+                    }
+                    IconButton(onClick = onToggleAlert, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            if (profile.alertEnabled) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                            contentDescription = "Alert",
+                            tint = if (profile.alertEnabled) Color(0xFFD32F2F) else Color.Gray
+                        )
+                    }
+                    IconButton(onClick = onToggleAutoConnect, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            Icons.Default.Link,
+                            contentDescription = "Auto Connect",
+                            tint = if (profile.autoConnect) Color(0xFF00796B) else Color.Gray
+                        )
+                    }
+                    IconButton(onClick = onEditProfile, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.EditNote, contentDescription = "Edit Notes", tint = Color.Gray)
+                    }
+                    Button(
+                        onClick = onConnect,
+                        shape = RoundedCornerShape(20.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0056B3))
+                    ) {
+                        Text("Connect")
+                    }
                 }
             }
         }
     }
+}
+
+private val ScanListFilter.label: String
+    get() = when (this) {
+        ScanListFilter.ALL -> "All"
+        ScanListFilter.FAVORITES -> "Favorites"
+        ScanListFilter.STRONG -> "Strong"
+        ScanListFilter.ALERTS -> "Alerts"
+        ScanListFilter.AUTO_CONNECT -> "Auto"
+    }
+
+private val ScanListFilter.icon: androidx.compose.ui.graphics.vector.ImageVector
+    get() = when (this) {
+        ScanListFilter.ALL -> Icons.Default.BluetoothSearching
+        ScanListFilter.FAVORITES -> Icons.Default.Star
+        ScanListFilter.STRONG -> Icons.Default.SignalCellularAlt
+        ScanListFilter.ALERTS -> Icons.Default.NotificationsActive
+        ScanListFilter.AUTO_CONNECT -> Icons.Default.Link
+    }
+
+@Composable
+private fun MiniRssiGraph(
+    history: List<DeviceRssiPoint>,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val points = history.takeLast(24)
+        if (points.size < 2) return@Canvas
+        val minRssi = -100f
+        val maxRssi = -35f
+        val stepX = size.width / (points.lastIndex).coerceAtLeast(1)
+        val coordinates = points.mapIndexed { index, point ->
+            val normalized = ((point.rssi - minRssi) / (maxRssi - minRssi)).coerceIn(0f, 1f)
+            Offset(index * stepX, size.height - normalized * size.height)
+        }
+
+        drawLine(
+            color = Color(0xFFE0E0E0),
+            start = Offset(0f, size.height - 1.dp.toPx()),
+            end = Offset(size.width, size.height - 1.dp.toPx()),
+            strokeWidth = 1.dp.toPx()
+        )
+        coordinates.zipWithNext().forEach { (start, end) ->
+            drawLine(
+                color = Color(0xFF1976D2),
+                start = start,
+                end = end,
+                strokeWidth = 2.dp.toPx()
+            )
+        }
+        drawCircle(
+            color = signalColor(points.last().rssi),
+            radius = 4.dp.toPx(),
+            center = coordinates.last()
+        )
+    }
+}
+
+@Composable
+private fun DeviceProfileDialog(
+    device: BleDevice,
+    profile: ScannerDeviceProfile,
+    onDismiss: () -> Unit,
+    onSave: (note: String, tag: String) -> Unit
+) {
+    var note by remember(profile.address) { mutableStateOf(profile.note) }
+    var tag by remember(profile.address) { mutableStateOf(profile.tag) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(device.name ?: "Device Profile") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(device.address, color = Color.Gray, fontSize = 12.sp)
+                OutlinedTextField(
+                    value = tag,
+                    onValueChange = { tag = it },
+                    label = { Text("Tag") },
+                    placeholder = { Text("e.g. Sensor, Beacon, Lab") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Notes") },
+                    placeholder = { Text("Where this device lives or what it does") },
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(note, tag) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }

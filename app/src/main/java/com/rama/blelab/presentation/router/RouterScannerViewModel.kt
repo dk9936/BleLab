@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -65,6 +67,20 @@ data class RouterToolsState(
     val errorMessage: String? = null
 )
 
+data class NsdScannerState(
+    val isScanning: Boolean = false,
+    val services: List<NsdServiceDetails> = emptyList(),
+    val errorMessage: String? = null
+)
+
+data class NsdServiceDetails(
+    val name: String,
+    val type: String,
+    val host: String?,
+    val port: Int?,
+    val attributes: Map<String, String> = emptyMap()
+)
+
 enum class SpeedTrend {
     Up,
     Down,
@@ -102,6 +118,7 @@ class RouterScannerViewModel(
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
 
     private val _state = MutableStateFlow(RouterScannerState())
     val state: StateFlow<RouterScannerState> = _state.asStateFlow()
@@ -112,6 +129,10 @@ class RouterScannerViewModel(
     private val _routerToolsState = MutableStateFlow(RouterToolsState())
     val routerToolsState: StateFlow<RouterToolsState> = _routerToolsState.asStateFlow()
     private var routerToolsLiveJob: Job? = null
+
+    private val _nsdScannerState = MutableStateFlow(NsdScannerState())
+    val nsdScannerState: StateFlow<NsdScannerState> = _nsdScannerState.asStateFlow()
+    private val nsdDiscoveryListeners = mutableListOf<NsdManager.DiscoveryListener>()
 
     fun selectRouter(router: NearbyRouter) {
         _selectedRouter.value = router
@@ -149,6 +170,43 @@ class RouterScannerViewModel(
     fun stopConnectedRouterToolsLiveUpdates() {
         routerToolsLiveJob?.cancel()
         routerToolsLiveJob = null
+    }
+
+    fun startNsdScan() {
+        if (_nsdScannerState.value.isScanning) return
+        stopNsdScan()
+
+        if (!isConnectedToWifi()) {
+            _nsdScannerState.update {
+                it.copy(
+                    isScanning = false,
+                    services = emptyList(),
+                    errorMessage = "Connect to Wi-Fi to scan NSD services."
+                )
+            }
+            return
+        }
+
+        _nsdScannerState.value = NsdScannerState(isScanning = true)
+        NSD_SERVICE_TYPES.forEach { serviceType ->
+            val listener = createNsdDiscoveryListener(serviceType)
+            nsdDiscoveryListeners.add(listener)
+            runCatching {
+                nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
+            }.onFailure { error ->
+                _nsdScannerState.update {
+                    it.copy(errorMessage = error.message ?: "Could not start NSD scan for $serviceType")
+                }
+            }
+        }
+    }
+
+    fun stopNsdScan() {
+        nsdDiscoveryListeners.forEach { listener ->
+            runCatching { nsdManager.stopServiceDiscovery(listener) }
+        }
+        nsdDiscoveryListeners.clear()
+        _nsdScannerState.update { it.copy(isScanning = false) }
     }
 
     fun refreshNetworkState(hasPermission: Boolean) {
@@ -209,6 +267,77 @@ class RouterScannerViewModel(
         val network = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
         return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
+    private fun createNsdDiscoveryListener(serviceType: String): NsdManager.DiscoveryListener {
+        return object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(regType: String) = Unit
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                resolveNsdService(serviceInfo)
+            }
+
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                _nsdScannerState.update { state ->
+                    state.copy(
+                        services = state.services.filterNot {
+                            it.name == serviceInfo.serviceName && it.type == serviceInfo.serviceType
+                        }
+                    )
+                }
+            }
+
+            override fun onDiscoveryStopped(serviceType: String) = Unit
+
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                runCatching { nsdManager.stopServiceDiscovery(this) }
+                _nsdScannerState.update {
+                    it.copy(
+                        isScanning = nsdDiscoveryListeners.isNotEmpty(),
+                        errorMessage = "NSD scan failed for $serviceType ($errorCode)"
+                    )
+                }
+            }
+
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                runCatching { nsdManager.stopServiceDiscovery(this) }
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun resolveNsdService(serviceInfo: NsdServiceInfo) {
+        val resolveListener = object : NsdManager.ResolveListener {
+            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                addNsdService(serviceInfo.toNsdServiceDetails())
+            }
+
+            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                addNsdService(serviceInfo.toNsdServiceDetails())
+            }
+        }
+        runCatching { nsdManager.resolveService(serviceInfo, resolveListener) }
+            .onFailure { addNsdService(serviceInfo.toNsdServiceDetails()) }
+    }
+
+    private fun addNsdService(service: NsdServiceDetails) {
+        _nsdScannerState.update { state ->
+            val updated = (state.services.filterNot { it.name == service.name && it.type == service.type } + service)
+                .sortedWith(compareBy<NsdServiceDetails> { it.type }.thenBy { it.name })
+            state.copy(services = updated, errorMessage = null)
+        }
+    }
+
+    private fun NsdServiceInfo.toNsdServiceDetails(): NsdServiceDetails {
+        return NsdServiceDetails(
+            name = serviceName,
+            type = serviceType,
+            host = host?.hostAddress,
+            port = port.takeIf { it > 0 },
+            attributes = attributes.mapValues { entry ->
+                entry.value.toString(Charsets.UTF_8)
+            }
+        )
     }
 
     private fun hasValidatedInternet(): Boolean {
@@ -695,5 +824,18 @@ class RouterScannerViewModel(
         const val SPEED_TIMEOUT_MS = 6_000
         const val SIGNAL_LEVEL_COUNT = 5
         const val WIFI_SCAN_SETTLE_MS = 2_000L
+        val NSD_SERVICE_TYPES = listOf(
+            "_http._tcp.",
+            "_https._tcp.",
+            "_workstation._tcp.",
+            "_printer._tcp.",
+            "_ipp._tcp.",
+            "_airplay._tcp.",
+            "_googlecast._tcp.",
+            "_hap._tcp.",
+            "_mqtt._tcp.",
+            "_arduino._tcp.",
+            "_esphomelib._tcp."
+        )
     }
 }

@@ -15,6 +15,8 @@ import io.reactivex.disposables.CompositeDisposable
 import io.reactivex.disposables.Disposable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.*
@@ -29,6 +31,7 @@ class AndroidBluetoothRepository(
     private val rxBleClient by lazy { RxBleClient.create(context) }
     
     private var scanDisposable: Disposable? = null
+    private var scanExpiryJob: Job? = null
     private var connectionDisposable: Disposable? = null
     private var gattDiscoveryDisposable: Disposable? = null
     private val notificationDisposables = CompositeDisposable()
@@ -55,6 +58,8 @@ class AndroidBluetoothRepository(
 
     private val TX_CHAR_UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
     private val RX_CHAR_UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+    private val DEVICE_LOST_TIMEOUT_MS = 6_000L
+    private val DEVICE_EXPIRY_CHECK_MS = 1_000L
 
     override fun startScanning() {
         if (_isScanning.value) return
@@ -68,6 +73,7 @@ class AndroidBluetoothRepository(
 
         _scannedDevices.value = emptyList()
         _isScanning.value = true
+        startDeviceExpiryLoop()
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -79,12 +85,14 @@ class AndroidBluetoothRepository(
                     val device = BleDevice(
                         name = scanResult.bleDevice.name,
                         address = scanResult.bleDevice.macAddress,
-                        rssi = scanResult.rssi
+                        rssi = scanResult.rssi,
+                        lastSeenTimestamp = System.currentTimeMillis()
                     )
                     updateScannedDevices(device)
                 },
                 { _ ->
                     _isScanning.value = false
+                    stopDeviceExpiryLoop()
                 }
             )
     }
@@ -92,6 +100,7 @@ class AndroidBluetoothRepository(
     override fun stopScanning() {
         scanDisposable?.dispose()
         scanDisposable = null
+        stopDeviceExpiryLoop()
         _isScanning.value = false
     }
 
@@ -240,11 +249,40 @@ class AndroidBluetoothRepository(
         val currentList = _scannedDevices.value.toMutableList()
         val index = currentList.indexOfFirst { it.address == device.address }
         if (index != -1) {
-            currentList[index] = device
+            val previous = currentList[index]
+            currentList[index] = device.copy(
+                name = device.name ?: previous.name,
+                isConnected = previous.isConnected,
+                distanceMeters = previous.distanceMeters,
+                movementState = previous.movementState
+            )
         } else {
             currentList.add(device)
         }
         _scannedDevices.value = currentList
+    }
+
+    private fun startDeviceExpiryLoop() {
+        scanExpiryJob?.cancel()
+        scanExpiryJob = scope.launch {
+            while (_isScanning.value) {
+                delay(DEVICE_EXPIRY_CHECK_MS)
+                expireLostDevices()
+            }
+        }
+    }
+
+    private fun stopDeviceExpiryLoop() {
+        scanExpiryJob?.cancel()
+        scanExpiryJob = null
+    }
+
+    private fun expireLostDevices() {
+        val cutoff = System.currentTimeMillis() - DEVICE_LOST_TIMEOUT_MS
+        val visibleDevices = _scannedDevices.value.filter { it.lastSeenTimestamp >= cutoff }
+        if (visibleDevices.size != _scannedDevices.value.size) {
+            _scannedDevices.value = visibleDevices
+        }
     }
 
     private fun broadcastMessage(data: ByteArray, type: MessageType) {
