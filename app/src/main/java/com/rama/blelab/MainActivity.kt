@@ -21,7 +21,13 @@ import com.rama.blelab.domain.repository.BluetoothRepository
 import com.rama.blelab.domain.usecase.*
 import com.rama.blelab.presentation.esp.EspTesterScreen
 import com.rama.blelab.presentation.esp.EspTesterViewModel
+import com.rama.blelab.presentation.explorer.NetworkExplorerScreen
+import com.rama.blelab.presentation.explorer.NetworkExplorerViewModel
 import com.rama.blelab.presentation.home.HomeScreen
+import com.rama.blelab.presentation.mqtt.MqttTesterScreen
+import com.rama.blelab.presentation.mqtt.MqttTesterViewModel
+import com.rama.blelab.presentation.network.NetworkInfoScreen
+import com.rama.blelab.presentation.network.NetworkInfoViewModel
 import com.rama.blelab.presentation.router.RouterDetailsScreen
 import com.rama.blelab.presentation.router.RouterScannerScreen
 import com.rama.blelab.presentation.router.RouterScannerViewModel
@@ -31,6 +37,8 @@ import com.rama.blelab.presentation.scanner.DeviceDetailsScreen
 import com.rama.blelab.presentation.scanner.ScannerRadarScreen
 import com.rama.blelab.presentation.scanner.ScannerScreen
 import com.rama.blelab.presentation.scanner.ScannerViewModel
+import com.rama.blelab.presentation.storage.StorageInfoScreen
+import com.rama.blelab.presentation.storage.StorageInfoViewModel
 import com.rama.blelab.presentation.terminal.TerminalScreen
 import com.rama.blelab.presentation.terminal.TerminalViewModel
 import com.rama.blelab.presentation.websocket.WebSocketScreen
@@ -84,6 +92,28 @@ class MainActivity : ComponentActivity() {
     }
 
     private val webSocketViewModel: WebSocketViewModel by viewModels()
+    private val mqttTesterViewModel: MqttTesterViewModel by viewModels()
+    private val networkExplorerViewModel: NetworkExplorerViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return NetworkExplorerViewModel(applicationContext) as T
+            }
+        }
+    }
+    private val networkInfoViewModel: NetworkInfoViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return NetworkInfoViewModel(applicationContext) as T
+            }
+        }
+    }
+    private val storageInfoViewModel: StorageInfoViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return StorageInfoViewModel(applicationContext) as T
+            }
+        }
+    }
 
     private val espTesterViewModel: EspTesterViewModel by viewModels {
         object : ViewModelProvider.Factory {
@@ -110,6 +140,10 @@ class MainActivity : ComponentActivity() {
                     scannerViewModel = scannerViewModel,
                     terminalViewModel = terminalViewModel,
                     webSocketViewModel = webSocketViewModel,
+                    mqttTesterViewModel = mqttTesterViewModel,
+                    networkExplorerViewModel = networkExplorerViewModel,
+                    networkInfoViewModel = networkInfoViewModel,
+                    storageInfoViewModel = storageInfoViewModel,
                     espTesterViewModel = espTesterViewModel,
                     routerScannerViewModel = routerScannerViewModel,
                     formulaImporter = formulaImporter
@@ -124,6 +158,10 @@ fun BleAppNavigation(
     scannerViewModel: ScannerViewModel,
     terminalViewModel: TerminalViewModel,
     webSocketViewModel: WebSocketViewModel,
+    mqttTesterViewModel: MqttTesterViewModel,
+    networkExplorerViewModel: NetworkExplorerViewModel,
+    networkInfoViewModel: NetworkInfoViewModel,
+    storageInfoViewModel: StorageInfoViewModel,
     espTesterViewModel: EspTesterViewModel,
     routerScannerViewModel: RouterScannerViewModel,
     formulaImporter: FormulaImporter
@@ -134,7 +172,11 @@ fun BleAppNavigation(
         composable("home") {
             HomeScreen(
                 onBleLabClick = { navController.navigate("scanner") },
+                onNetworkExplorerClick = { navController.navigate("networkExplorer") },
                 onWebSocketLabClick = { navController.navigate("webSocket") },
+                onMqttTesterClick = { navController.navigate("mqttTester") },
+                onNetworkInfoClick = { navController.navigate("networkInfo") },
+                onStorageInfoClick = { navController.navigate("storageInfo") },
                 onRouterScannerClick = { navController.navigate("routerScanner") },
                 onEspTesterClick = { navController.navigate("espTester") }
             )
@@ -151,6 +193,15 @@ fun BleAppNavigation(
                     navController.navigate("terminal")
                 },
                 onRadarClick = { navController.navigate("scannerRadar") }
+            )
+        }
+        composable("networkExplorer") {
+            NetworkExplorerScreen(
+                viewModel = networkExplorerViewModel,
+                onBack = {
+                    networkExplorerViewModel.stopScan()
+                    navController.popBackStack()
+                }
             )
         }
         composable("scannerRadar") {
@@ -194,6 +245,27 @@ fun BleAppNavigation(
                     webSocketViewModel.disconnect()
                     navController.popBackStack()
                 }
+            )
+        }
+        composable("mqttTester") {
+            MqttTesterScreen(
+                viewModel = mqttTesterViewModel,
+                onBack = {
+                    mqttTesterViewModel.disconnect()
+                    navController.popBackStack()
+                }
+            )
+        }
+        composable("networkInfo") {
+            NetworkInfoScreen(
+                viewModel = networkInfoViewModel,
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable("storageInfo") {
+            StorageInfoScreen(
+                viewModel = storageInfoViewModel,
+                onBack = { navController.popBackStack() }
             )
         }
         composable("espTester") {

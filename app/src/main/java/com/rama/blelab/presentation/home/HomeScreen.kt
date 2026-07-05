@@ -12,13 +12,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.SettingsEthernet
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -39,7 +42,11 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun HomeScreen(
     onBleLabClick: () -> Unit,
+    onNetworkExplorerClick: () -> Unit,
     onWebSocketLabClick: () -> Unit,
+    onMqttTesterClick: () -> Unit,
+    onNetworkInfoClick: () -> Unit,
+    onStorageInfoClick: () -> Unit,
     onRouterScannerClick: () -> Unit,
     onEspTesterClick: () -> Unit
 ) {
@@ -61,6 +68,7 @@ fun HomeScreen(
                 .padding(padding)
                 .fillMaxSize()
                 .background(Color(0xFFF8F9FA))
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.Center
         ) {
@@ -87,12 +95,48 @@ fun HomeScreen(
             )
             Spacer(modifier = Modifier.height(12.dp))
             HomeOption(
+                title = "Network Explorer",
+                subtitle = "See nearby Wi-Fi, routers, BLE, and Bluetooth devices in one place.",
+                icon = Icons.Default.Router,
+                iconBackground = Color(0xFFE8EAF6),
+                iconTint = Color(0xFF3949AB),
+                onClick = onNetworkExplorerClick
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            HomeOption(
                 title = "Web Socket Lab",
                 subtitle = "Connect to a WebSocket URL, send messages, and inspect traffic.",
                 icon = Icons.Default.SettingsEthernet,
                 iconBackground = Color(0xFFE8F5E9),
                 iconTint = Color(0xFF2E7D32),
                 onClick = onWebSocketLabClick
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            HomeOption(
+                title = "MQTT Tester",
+                subtitle = "Connect to an MQTT broker, subscribe to topics, and publish payloads.",
+                icon = Icons.Default.SettingsEthernet,
+                iconBackground = Color(0xFFEDE7F6),
+                iconTint = Color(0xFF5E35B1),
+                onClick = onMqttTesterClick
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            HomeOption(
+                title = "Network Info",
+                subtitle = "View this device connection details and live upload/download counters.",
+                icon = Icons.Default.SettingsEthernet,
+                iconBackground = Color(0xFFE0F7FA),
+                iconTint = Color(0xFF00838F),
+                onClick = onNetworkInfoClick
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            HomeOption(
+                title = "Storage Info",
+                subtitle = "See device storage usage for images, videos, audio, downloads, and documents.",
+                icon = Icons.Default.Storage,
+                iconBackground = Color(0xFFFFF3E0),
+                iconTint = Color(0xFFF57C00),
+                onClick = onStorageInfoClick
             )
             Spacer(modifier = Modifier.height(12.dp))
             HomeOption(
